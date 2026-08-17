@@ -1,0 +1,529 @@
+-- # Roblox Services
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+
+-- # Local Player
+local LocalPlayer = Players.LocalPlayer
+
+-- # Constants
+local PLAYER_TELEPORT_DELAY = 0.3
+local EGG_TELEPORT_DELAY = 0.3
+
+local PLAYER_TELEPORT_OFFSET = -9
+local EGG_TELEPORT_OFFSET = -8
+
+local MIN_Y_POSITION = -110
+
+-- How long we can stay on the same player
+local STUCK_PLAYER_TIME = 20
+
+-- # No Fall Constants
+local NO_FALL_CHECK_DISTANCE = 15
+local NO_FALL_RAGDOLL_TIME = 0.1
+local NO_FALL_DELAY = 0.05
+
+-- # Variables
+local AutoTeleporting = false
+local AutoTeleportId = 0
+
+-- Stores enemy egg positions so we can revisit them later
+local EggPositions = {}
+
+-- # Raycast
+local NoFallRaycastParams = RaycastParams.new()
+NoFallRaycastParams.FilterType = Enum.RaycastFilterType.Exclude
+
+-- Gets local character
+local function getLocalCharacter()
+	local character = LocalPlayer.Character
+	if not character then
+		return nil
+	end
+
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	local rootPart = character:FindFirstChild("HumanoidRootPart")
+
+	return character, humanoid, rootPart
+end
+
+-- Checks if a teleport destination is above the void limit
+local function canTeleportTo(cframe: CFrame)
+	return cframe.Position.Y > MIN_Y_POSITION
+end
+
+-- Gets all valid enemy players
+local function getAvailablePlayers()
+	local availablePlayers = {}
+	local localTeamId = LocalPlayer:GetAttribute("TeamId")
+
+	for _, player in Players:GetPlayers() do
+		if player == LocalPlayer then
+			continue
+		end
+
+		local targetCharacter = player.Character
+		if not targetCharacter then
+			continue
+		end
+
+		local humanoid = targetCharacter:FindFirstChildOfClass("Humanoid")
+		if not humanoid or humanoid.Health <= 0 then
+			continue
+		end
+
+		local rootPart = targetCharacter:FindFirstChild("HumanoidRootPart")
+		if not rootPart then
+			continue
+		end
+
+		local targetTeamId = player:GetAttribute("TeamId")
+
+		-- Ignore teammates
+		if localTeamId ~= nil and targetTeamId == localTeamId then
+			continue
+		end
+
+		-- Ignore players below our minimum teleport position
+		local targetCFrame =
+			rootPart.CFrame
+			* CFrame.new(0, PLAYER_TELEPORT_OFFSET, 0)
+
+		if not canTeleportTo(targetCFrame) then
+			continue
+		end
+
+		table.insert(availablePlayers, player)
+	end
+
+	return availablePlayers
+end
+
+-- Gets the Eggs folder
+local function getEggsFolder()
+	return workspace:FindFirstChild("Eggs")
+end
+
+-- Gets a teleportable part inside an egg
+local function getEggTeleportPart(egg: Instance)
+	local rootPart = egg:FindFirstChild("RootPart")
+
+	if rootPart and rootPart:IsA("BasePart") then
+		return rootPart
+	end
+
+	for _, descendant in egg:GetDescendants() do
+		if descendant:IsA("MeshPart") and descendant.Name == "EGGSHELL" then
+			return descendant
+		end
+	end
+
+	return nil
+end
+
+-- Saves an egg position
+local function saveEggPosition(egg: Instance)
+	if EggPositions[egg] then
+		return
+	end
+
+	local teleportPart = getEggTeleportPart(egg)
+	if not teleportPart then
+		return
+	end
+
+	local targetCFrame =
+		teleportPart.CFrame
+		* CFrame.new(0, EGG_TELEPORT_OFFSET, 0)
+
+	if not canTeleportTo(targetCFrame) then
+		return
+	end
+
+	EggPositions[egg] = targetCFrame
+end
+
+-- Gets every living enemy egg
+local function getLivingEnemyEggs()
+	local eggsFolder = getEggsFolder()
+	if not eggsFolder then
+		return nil
+	end
+
+	local livingEggs = {}
+	local localTeamId = LocalPlayer:GetAttribute("TeamId")
+
+	for _, egg in eggsFolder:GetChildren() do
+		local eggTeamId = egg:GetAttribute("TeamId")
+
+		-- Ignore our team's egg
+		if localTeamId ~= nil and eggTeamId == localTeamId then
+			continue
+		end
+
+		-- Save enemy egg position even if it later gets destroyed
+		saveEggPosition(egg)
+
+		local health = egg:GetAttribute("Health")
+
+		-- Treat unknown health as alive
+		if health == nil or health > 0 then
+			table.insert(livingEggs, egg)
+		end
+	end
+
+	return livingEggs
+end
+
+-- Teleports to an enemy egg
+local function teleportToEgg(egg: Instance)
+	local _, _, rootPart = getLocalCharacter()
+	if not rootPart then
+		return
+	end
+
+	local teleportPart = getEggTeleportPart(egg)
+	if not teleportPart then
+		return
+	end
+
+	local targetCFrame =
+		teleportPart.CFrame
+		* CFrame.new(0, EGG_TELEPORT_OFFSET, 0)
+
+	if not canTeleportTo(targetCFrame) then
+		return
+	end
+
+	-- Remember this position
+	EggPositions[egg] = targetCFrame
+
+	rootPart.CFrame = targetCFrame
+end
+
+-- Teleports to a random enemy player
+-- Returns the player we teleported to
+local function teleportToRandomPlayer()
+	local _, _, rootPart = getLocalCharacter()
+	if not rootPart then
+		return nil, 0
+	end
+
+	local availablePlayers = getAvailablePlayers()
+	local playerCount = #availablePlayers
+
+	if playerCount == 0 then
+		return nil, 0
+	end
+
+	local randomPlayer =
+		availablePlayers[math.random(1, playerCount)]
+
+	local targetCharacter = randomPlayer.Character
+	if not targetCharacter then
+		return nil, playerCount
+	end
+
+	local targetRootPart =
+		targetCharacter:FindFirstChild("HumanoidRootPart")
+
+	if not targetRootPart then
+		return nil, playerCount
+	end
+
+	local targetCFrame =
+		targetRootPart.CFrame
+		* CFrame.new(0, PLAYER_TELEPORT_OFFSET, 0)
+
+	if not canTeleportTo(targetCFrame) then
+		return nil, playerCount
+	end
+
+	rootPart.CFrame = targetCFrame
+
+	return randomPlayer, playerCount
+end
+
+-- Shuffles through previously saved egg positions
+local function shuffleEggPositions(id: number)
+	local positions = {}
+
+	for _, cframe in EggPositions do
+		table.insert(positions, cframe)
+	end
+
+	if #positions == 0 then
+		return
+	end
+
+	-- Shuffle positions
+	for i = #positions, 2, -1 do
+		local j = math.random(1, i)
+
+		positions[i], positions[j] =
+			positions[j], positions[i]
+	end
+
+	for _, cframe in positions do
+		if not AutoTeleporting or id ~= AutoTeleportId then
+			return
+		end
+
+		if not canTeleportTo(cframe) then
+			continue
+		end
+
+		local _, _, rootPart = getLocalCharacter()
+		if not rootPart then
+			continue
+		end
+
+		rootPart.CFrame = cframe
+
+		task.wait(EGG_TELEPORT_DELAY)
+	end
+end
+
+-- Stays in egg phase until every enemy egg is dead
+local function farmEggs(id: number)
+	while AutoTeleporting and id == AutoTeleportId do
+		local livingEggs = getLivingEnemyEggs()
+
+		if livingEggs == nil then
+			task.wait(EGG_TELEPORT_DELAY)
+			continue
+		end
+
+		-- Every enemy egg is dead
+		if #livingEggs == 0 then
+			task.wait(EGG_TELEPORT_DELAY)
+
+			local checkAgain = getLivingEnemyEggs()
+
+			if checkAgain and #checkAgain == 0 then
+				return true
+			end
+
+			continue
+		end
+
+		for _, egg in livingEggs do
+			if not AutoTeleporting or id ~= AutoTeleportId then
+				return false
+			end
+
+			local localTeamId = LocalPlayer:GetAttribute("TeamId")
+			local eggTeamId = egg:GetAttribute("TeamId")
+
+			-- Ignore our team's egg
+			if localTeamId ~= nil and eggTeamId == localTeamId then
+				continue
+			end
+
+			local health = egg:GetAttribute("Health")
+
+			-- Ignore dead eggs
+			if health ~= nil and health <= 0 then
+				continue
+			end
+
+			teleportToEgg(egg)
+
+			task.wait(EGG_TELEPORT_DELAY)
+		end
+	end
+
+	return false
+end
+
+-- Forces ragdoll state
+local function spamRagdoll()
+	local _, humanoid = getLocalCharacter()
+	if not humanoid then
+		return
+	end
+
+	humanoid:ChangeState(Enum.HumanoidStateType.Ragdoll)
+end
+
+-- Handles no fall
+local function runNoFall(id: number)
+	while AutoTeleporting and id == AutoTeleportId do
+		local character, humanoid, rootPart =
+			getLocalCharacter()
+
+		if not character
+			or not humanoid
+			or not rootPart
+			or humanoid.Health <= 0
+		then
+			task.wait()
+			continue
+		end
+
+		NoFallRaycastParams.FilterDescendantsInstances = {
+			character,
+			workspace.CurrentCamera,
+		}
+
+		local rayDistance =
+			humanoid.HipHeight
+			+ NO_FALL_CHECK_DISTANCE
+
+		local ray = workspace:Raycast(
+			rootPart.Position,
+			Vector3.new(0, -rayDistance, 0),
+			NoFallRaycastParams
+		)
+
+		-- No ground nearby underneath us
+		if not ray then
+			humanoid:ChangeState(
+				Enum.HumanoidStateType.Ragdoll
+			)
+
+			task.wait(NO_FALL_RAGDOLL_TIME)
+
+			if not AutoTeleporting
+				or id ~= AutoTeleportId
+			then
+				return
+			end
+
+			if humanoid.Parent and humanoid.Health > 0 then
+				humanoid:ChangeState(
+					Enum.HumanoidStateType.Running
+				)
+			end
+
+			task.wait(NO_FALL_DELAY)
+		else
+			task.wait()
+		end
+	end
+end
+
+-- Player phase
+local function farmPlayers(id: number)
+	local lastPlayer = nil
+	local samePlayerStarted = 0
+
+	while AutoTeleporting and id == AutoTeleportId do
+		-- Go back to egg phase if an enemy egg exists
+		local livingEggs = getLivingEnemyEggs()
+
+		if livingEggs == nil or #livingEggs > 0 then
+			return
+		end
+
+		local targetPlayer, playerCount =
+			teleportToRandomPlayer()
+
+		if targetPlayer then
+			if targetPlayer == lastPlayer then
+				-- Stuck on them for 20 seconds
+				if time() - samePlayerStarted
+					>= STUCK_PLAYER_TIME
+				then
+					spamRagdoll()
+					shuffleEggPositions(id)
+
+					-- Reset timer after shuffling
+					lastPlayer = nil
+					samePlayerStarted = 0
+
+					continue
+				end
+			else
+				-- Different player, reset timer
+				lastPlayer = targetPlayer
+				samePlayerStarted = time()
+			end
+		else
+			lastPlayer = nil
+			samePlayerStarted = 0
+		end
+
+		if playerCount == 1 then
+			task.wait()
+		else
+			task.wait(PLAYER_TELEPORT_DELAY)
+		end
+	end
+end
+
+-- Main auto farm
+local function runAutoFarm(id: number)
+	while AutoTeleporting and id == AutoTeleportId do
+		-- Phase 1: enemy eggs
+		local eggsDead = farmEggs(id)
+
+		if not eggsDead then
+			return
+		end
+
+		if not AutoTeleporting or id ~= AutoTeleportId then
+			return
+		end
+
+		-- Phase 2: enemy players
+		farmPlayers(id)
+	end
+end
+
+-- Starts auto farm
+local function startAutoTeleport()
+	if AutoTeleporting then
+		return
+	end
+
+	AutoTeleporting = true
+	AutoTeleportId += 1
+
+	-- Reset saved positions for this run
+	table.clear(EggPositions)
+
+	local id = AutoTeleportId
+
+	-- Run autofarm
+	task.spawn(function()
+		runAutoFarm(id)
+	end)
+
+	-- Run NoFall alongside autofarm
+	task.spawn(function()
+		runNoFall(id)
+	end)
+end
+
+-- Stops auto farm
+local function stopAutoTeleport()
+	if not AutoTeleporting then
+		return
+	end
+
+	AutoTeleporting = false
+	AutoTeleportId += 1
+end
+
+-- Toggles auto farm
+local function toggleAutoTeleport()
+	if AutoTeleporting then
+		stopAutoTeleport()
+	else
+		startAutoTeleport()
+	end
+end
+
+-- Listen for LeftShift
+UserInputService.InputBegan:Connect(function(input: InputObject, gameProcessed: boolean)
+	if gameProcessed then
+		return
+	end
+
+	if input.KeyCode == Enum.KeyCode.LeftShift then
+		toggleAutoTeleport()
+	end
+end)
+
+-- Start automatically
+toggleAutoTeleport()
