@@ -1,0 +1,23 @@
+warn("loading skywars loader")
+
+-- # Variables
+local WAIT_DELAY = 0.5
+
+-- # Place Id
+local CurrentPlaceId = game.PlaceId
+
+-- # Get Supported Games
+local Supported = {
+	[8951451142] = "Viper/EggwarsAutowin.lua",
+	[8592115909] = "Viper/SkywarsAutowin.lua",
+    [8542275097] = "Viper/SkywarsAutowin.lua",
+}
+
+task.delay(WAIT_DELAY, function()
+	local doesGameExist = Supported[CurrentPlaceId]
+	if doesGameExist then
+		loadstring(readfile(doesGameExist))()
+	end
+
+	warn("skywars should be start/starting!")
+end)
