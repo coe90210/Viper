@@ -1,0 +1,29 @@
+-- # Roblox Services
+local Players = cloneref(game:GetService("Players"))
+local TextChatService = cloneref(game:GetService("TextChatService"))
+
+-- # Local Player
+local LocalPlayer = Players.LocalPlayer
+
+-- # Tables
+local ChatLogs = {}
+
+-- Record chat automatically
+local MessageConnection = TextChatService.MessageReceived:Connect(function(message: TextChatMessage)
+	local textSource = message.TextSource
+	if not textSource then return end
+	if textSource.UserId == LocalPlayer.UserId then return end
+	local player = Players:GetPlayerByUserId(textSource.UserId)
+	local username = player and player.Name or tostring(textSource.UserId)
+	table.insert(ChatLogs, username .. ": " .. message.Text)
+end)
+
+-- Ends recording
+return function()
+	if MessageConnection then
+		MessageConnection:Disconnect()
+		MessageConnection = nil
+	end
+
+	return ChatLogs
+end
